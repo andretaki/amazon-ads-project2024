@@ -1,0 +1,93 @@
+service: campaign-optimization-service
+
+provider:
+  name: aws
+  runtime: python3.8
+  region: us-east-1
+  stage: dev
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource: 'arn:aws:secretsmanager:us-east-1:568870880733:secret:*'
+    - Effect: Allow
+      Action:
+        - lambda:InvokeFunction
+      Resource: 'arn:aws:lambda:us-east-1:568870880733:function:campaign-optimization-service-dev-*'
+    - Effect: Allow
+      Action:
+        - logs:CreateLogGroup
+        - logs:CreateLogStream
+        - logs:PutLogEvents
+      Resource: 'arn:aws:logs:us-east-1:568870880733:*'
+
+functions:
+  FetchSecrets:
+    handler: fetch_secrets.lambda_handler
+    description: Fetches secrets from AWS Secrets Manager
+  GetAccessToken:
+    handler: get_access_token.lambda_handler
+    description: Obtains an access token from Amazon
+  SendCampaignReportRequest:
+    handler: send_campaign_report_request.lambda_handler
+    description: Sends a request to generate a campaign report
+  CheckReportStatusLambda:
+    handler: check_report_status_lambda.lambda_handler
+    description: Checks the status of the campaign report
+  StoreInS3:
+    handler: store_report_in_s3.lambda_handler
+    description: Stores the report in S3
+
+plugins:
+  - serverless-step-functions
+
+stepFunctions:
+  stateMachines:
+    CampaignOptimizationStateMachine:
+      definition:
+        Comment: "Campaign Optimization Workflow"
+        StartAt: FetchSecrets
+        States:
+          FetchSecrets:
+            Type: Task
+            Resource: "arn:aws:lambda:us-east-1:568870880733:function:campaign-optimization-service-dev-FetchSecrets"
+            ResultPath: $.body
+            Next: GetAccessToken
+          GetAccessToken:
+            Type: Task
+            Resource: "arn:aws:lambda:us-east-1:568870880733:function:campaign-optimization-service-dev-GetAccessToken"
+            Next: SendCampaignReportRequest
+          SendCampaignReportRequest:
+            Type: Task
+            Resource: "arn:aws:lambda:us-east-1:568870880733:function:campaign-optimization-service-dev-SendCampaignReportRequest"
+            Next: CheckReportStatusLambda
+          CheckReportStatusLambda:
+            Type: Task
+            Resource: "arn:aws:lambda:us-east-1:568870880733:function:campaign-optimization-service-dev-CheckReportStatusLambda"
+            Next: CheckReportStatus
+          CheckReportStatus:
+            Type: Choice
+            Choices:
+              - Variable: "$.status"
+                StringEquals: "COMPLETED"
+                Next: StoreInS3
+              - Variable: "$.status"
+                StringEquals: "PENDING"
+                Next: WaitAndRetryCheck
+              - Variable: "$.status"
+                StringEquals: "ERROR"
+                Next: HandleError
+              - Variable: "$.status"
+                StringEquals: "PROCESSING"
+                Next: WaitAndRetryCheck
+            Default: HandleError
+          StoreInS3:
+            Type: Task
+            Resource: "arn:aws:lambda:us-east-1:568870880733:function:campaign-optimization-service-dev-StoreInS3"
+            End: true
+          WaitAndRetryCheck:
+            Type: Wait
+            Seconds: 10
+            Next: CheckReportStatusLambda
+          HandleError:
+            Type: Fail
